@@ -1,4 +1,4 @@
-<!-- phil-dev source-sha256=c2fc1df5234b9dfe74f197e0be8695fdaf48091b39572ee83acef9c6332f3d43 -->
+<!-- phil-dev source-sha256=fe95f9cb3b584892a2ffb305f74f089cd0258745c7fd74a01f0b81debc019782 -->
 # phil/privacy-bundle
 
 **Déclarer les champs personnels, caviarder les journaux, respecter les droits des membres et des personnes sans compte,
@@ -13,16 +13,22 @@ d'exception avant qu'une ligne soit écrite. Les réponses aux demandes d'accès
 d'un contrat par module, branché par l'autoconfiguration et lancé depuis la console. Le calendrier de conservation
 déclare le registre des traitements — finalité, destinataires, sous-traitants et lieu de chaque stockage —, que la
 commande affiche avec les champs déclarés et qui la fait échouer en CI tant qu'il reste une lacune ; il devient aussi des
-ordres de purge, et une exécution est refusée quand une ligne de tâche n'a pas de purgeur. Un petit registre garde chaque
-incident de confidentialité et nomme les avis encore dus. Une copie de la base est anonymisée colonne par colonne —
-courriels, noms, téléphones dans des plages fictives, adresses, IBAN, dates décalées, empreintes, texte de remplissage —
-à partir de `#[Anonymize]`, des catégories déclarées et de la configuration, avec des paquets de locale pour huit locales
-et une garde qui refuse de toucher une base de production.
+ordres de purge, et une exécution est refusée quand une ligne de tâche n'a pas de purgeur. Un registre garde chaque
+incident de confidentialité avec les huit paragraphes que le Québec demande pour chaque ligne, nomme les avis et les
+paragraphes encore dus, garde ses corrections et un journal des communications à un tiers, des avis reportés pour une
+enquête et des consultations de la personne responsable, et garde chaque ligne au moins cinq ans ; des brouillons des
+avis à l'autorité et aux personnes en sont tirés en Markdown, et personne ne les envoie sauf la personne responsable.
+Une copie de la base est anonymisée colonne par colonne — courriels, noms, téléphones dans des plages fictives,
+adresses, IBAN, dates décalées, empreintes, texte de remplissage — à partir de `#[Anonymize]`, des catégories déclarées
+et de la configuration, avec des paquets de locale pour huit locales et une garde qui refuse de toucher une base de
+production.
 
 D'emblée, un membre télécharge ses données, en archive ZIP avec un README lisible et un fichier JSON par module, et
 supprime son compte depuis ses préférences. Une suppression est un workflow : une demande, un délai pendant lequel elle
 peut être annulée, un export, puis l'effacement de chaque module, une seule exécution par personne, confirmée par le mode
-sudo de Symfony. Une fois activé, une personne sans compte demande la même chose par un lien envoyé à son adresse,
+sudo de Symfony. Une fois activé, l'effacement lui-même s'exécute comme un workflow : une étape par module, envoyée par
+phil/outbox-bundle dans la transaction de la demande, réessayée et terminée séparément, les services externes accusant
+réception de la leur, avec une page et une réponse JSON où la personne le suit. Une fois activé, une personne sans compte demande la même chose par un lien envoyé à son adresse,
 derrière des limites de débit et avec la même réponse que l'adresse soit connue ou non. Les durées de conservation sont
 appliquées par une commande ou un message planifié. Le consentement aux témoins est refusé par défaut, aussi facile à
 refuser qu'à accepter, peut être retiré en tout temps, respecte le Global Privacy Control, et laisse une preuve datée de
@@ -69,15 +75,18 @@ l'application décide.
 | `ProcessingRegister`, `ProcessingActivity`, `phil:privacy:register` | Implémentés et testés : le registre des traitements tiré du calendrier et des déclarations, en Markdown ou en JSON, `--strict` |
 | `RetentionRun`, `RetentionJob`, `phil:privacy:retention`, le calendrier `phil_privacy` | Implémentés, testés et branchés depuis un calendrier |
 | `AccountDeletions`, le workflow, `phil:privacy:deletions` | Implémentés, testés et branchés |
+| Le workflow d'effacement : `ErasureRequests`, un message d'outbox par module, la page de progression et le JSON, `phil:privacy:erasure` | Implémentés, testés et branchés ; inactifs tant qu'ils ne sont pas activés |
 | Le consentement aux témoins : bannière, page, fonctions Twig, contrôleur Stimulus, preuves | Implémenté, testé et branché |
 | L'inventaire des témoins, la politique des témoins, `AssertsDeclaredCookies` | Implémentés, testés et branchés |
 | `privacy_embed()` : les cadres tiers retenus jusqu'au consentement | Implémenté, testé et branché |
 | L'export et l'effacement d'un membre depuis ses préférences, en archive ZIP | Implémentés, testés et actifs par défaut |
 | Les demandes des personnes sans compte, par un lien vérifié | Implémentées, testées et branchées ; inactives tant qu'elles ne sont pas activées |
-| Le registre des incidents de confidentialité, `phil:privacy:incident`, `phil:privacy:incidents` | Implémentés, testés et branchés |
+| Le registre des incidents de confidentialité, `phil:privacy:incident`, `phil:privacy:incidents` : les huit paragraphes de l'article 7 du règlement québécois (r. 3.1), corrections gardées, cinq ans au moins (article 8) | Implémentés, testés et branchés |
+| Le journal d'un incident, `phil:privacy:incident-journal` : communications à un tiers, avis reportés pour une enquête et consultations de la personne responsable (P-39.1, articles 3.5 et 3.7) | Implémenté, testé et branché |
+| Les brouillons des avis d'un incident, `phil:privacy:incident-notice` : à la Commission, ses suivis, à chaque personne et au public (r. 3.1, articles 3 à 6), en Markdown, en français et en anglais, remplis à partir du registre ; rien n'est envoyé | Implémentés, testés et branchés |
 | Le consentement de chaque membre aux courriels suivis, `EmailTrackingConsents` | Implémenté, testé et branché ; inactif tant qu'il n'est pas activé |
 | Les contrôleurs Stimulus par AssetMapper et StimulusBundle | Implémentés et testés |
-| `PersonalDataExporter`, `PersonalDataEraser`, `RetentionScheduleSource`, `RetentionPurger` | Ports |
+| `PersonalDataExporter`, `PersonalDataEraser`, `ExternalPersonalDataEraser`, `RetentionScheduleSource`, `RetentionPurger`, `ErasureRequestStore` | Ports |
 | `#[Anonymize]`, `#[AsAnonymizer]`, les treize anonymiseurs, les huit paquets de locale | Implémentés et testés |
 | `AnonymizationPlanReader`, `AnonymizationRun`, `ProductionGuard`, `ConnectionIdentity` | Implémentés, testés et branchés |
 | `phil:privacy:anonymize` | Implémentée et testée sur SQLite ; MySQL, MariaDB et PostgreSQL par Doctrine DBAL |
@@ -102,6 +111,11 @@ l'application décide.
   traitements, et l'archive ZIP d'une réponse d'accès.
 - [Calendrier de conservation et purges](doc/fr/retention.md) — les durées et les dates limites en UTC avec la fin de
   mois ramenée, les lignes du calendrier et leurs contradictions refusées, `RetentionRun`, et l'exécution de la tâche.
+- [L'effacement comme workflow](doc/fr/erasure-workflow.md) — l'inventaire d'effacement et sa version, un message d'outbox
+  par module, les états, les échecs et les rejeux, les services externes et leur accusé de réception, la page de
+  progression, et les migrations pour MySQL et PostgreSQL.
+- [Choisir un contrôle](doc/fr/choosing-a-control.md) — quel outil répond à quel problème et où il s'arrête : effacer,
+  conserver, caviarder, pseudonymiser et anonymiser, chiffrement et index aveugles, sauvegardes.
 - [Supprimer un compte](doc/fr/account-deletion.md) — le workflow, le délai et l'annulation, ce qui garantit une seule
   exécution par personne, le passage de balayage, et l'endroit où va l'export.
 - [Consentement aux témoins](doc/fr/consent.md) — la déclaration des catégories, les fonctions Twig, les règles, le
@@ -112,8 +126,12 @@ l'application décide.
   écrivent moins de traceurs, et le contrôleur Stimulus.
 - [Demandes sans compte](doc/fr/requests-without-an-account.md) — le lien vérifié, les étapes, les protections contre
   les abus, et qui est une adresse vérifiée.
-- [Le registre des incidents](doc/fr/incidents.md) — l'inscrire, le compléter et l'afficher, les avis qu'exige un
-  risque sérieux, et sa durée de conservation.
+- [Le registre des incidents](doc/fr/incidents.md) — ce que demandent la loi et le règlement du Québec
+  (P-39.1, art. 3.5 à 3.8 ; r. 3.1), inscrire, compléter, corriger et afficher une ligne, les avis qu'exige un risque
+  sérieux, le journal d'un incident, les cinq ans de conservation, et la migration de ses tables.
+- [Les brouillons des avis d'un incident](doc/fr/incident-notices.md) — les avis à la Commission, leurs suivis, à chaque
+  personne et au public (r. 3.1, art. 3 à 6), les rubriques remplies à partir du registre et celles laissées à
+  compléter, qui décide et qui envoie, et le remplacement des gabarits.
 - [Courriels suivis](doc/fr/email-tracking.md) — le consentement de chaque membre au comptage des ouvertures et au suivi
   des clics, ce que demande un expéditeur, la version du texte, et son export et son effacement.
 - [Cadre juridique](doc/fr/legal-framework.md) — ePrivacy et la CNIL, la loi 25 du Québec, le RGPD et l'Omnibus

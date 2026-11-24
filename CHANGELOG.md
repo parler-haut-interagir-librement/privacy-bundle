@@ -4,6 +4,153 @@ All notable changes to `phil/privacy-bundle` will be documented in this file.
 
 Updates should follow the [Keep a CHANGELOG](https://keepachangelog.com/) principles.
 
+## 0.3.0-alpha - 2026-11-24
+
+The erasure can run as a workflow, one step per module through phil/outbox-bundle,
+`ErasureEffect::Anonymised` tells a skeleton judged non-identifiable from a pseudonymised record, and the register of
+confidentiality incidents holds the eight paragraphs of section 7 of the Québec *Regulation respecting confidentiality
+incidents* (chapter A-2.1, r. 3.1), keeps its corrections, is kept at least five years (section 8), and drafts in
+Markdown the notices to the Commission, their follow-ups, and the notices to each person and in public (sections 3 to
+6), which the person in charge reviews and sends, with a journal of the communications to a third party, the notices
+put off for an investigation and the consultations of the person in charge (sections 3.5 and 3.7 of chapter P-39.1);
+every `Sec-GPC` header of a request is read. See [Erasure as a workflow](doc/erasure-workflow.md),
+[The register of incidents](doc/incidents.md) and [The drafts of the notices](doc/incident-notices.md).
+
+To update: a `GuestRequestStore` of your own implements `retain()`. Code that reads the register's JSON, or the
+rows of `RegisterEntry::toArray()`, finds `personal_data_left` added, and the Markdown register a column more. Review
+the stores your erasers report as `Pseudonymised`: keep it for a pseudonym, a token or a keyed hash, which stay
+personal data, and report `Anonymised` only for a skeleton someone judged non-identifiable. To turn the workflow on,
+install phil/outbox-bundle on the connection of the bundle, route `EraseModule` to an asynchronous transport, set
+`erasure_workflow.enabled: true`, and run `doctrine:migrations:diff`, or the SQL of
+[The tables](doc/erasure-workflow.md#the-tables), for `phil_privacy_erasure_request` and `phil_privacy_erasure_step`.
+For the register of incidents, run `doctrine:migrations:diff`, or the SQL of [The tables](doc/incidents.md#the-tables),
+which adds nine columns to `phil_privacy_incident`, nullable or false by default so that its lines are kept, and creates
+`phil_privacy_incident_revision` and `phil_privacy_incident_journal`. A fixed retention period shorter than five years
+on `phil_privacy_incident` now fails the container build: raise it to `P5Y` or more. An `IncidentRegister` of your own
+that also purges keeps at least five years from the discovery. Code that reads the JSON of `phil:privacy:incidents`
+finds the new fields, and its Markdown ten columns more, a table of corrections and a table of the journal;
+`phil:privacy:incident` prints the paragraphs a line still lacks.
+
+### Added
+
+- Erasure as a workflow, `erasure_workflow` (`enabled`, `lease`, `operator_role`, `store`), off by default:
+  `Application\Erasure\ErasureRequests`, which opens a request for every module of the erasure inventory or for the
+  modules named, a module the inventory does not declare refused, and keeps the inventory's version on it; one
+  `phil_privacy.erase_module` outbox record per module, written in the transaction of the request, carrying the
+  request's identifier and the module's name, with the idempotency key `<request>:<module>`; one step per module
+  (`pending`, `running`, `completed`, `needs_attention`), unique for the pair and leased to one worker, so that a
+  message delivered twice or a request resumed never runs a finished module again; the request's state drawn from
+  its steps (`running`, `needs_attention`, `completed`), and `failed` left to an operator.
+- `Domain\Erasure\ErasureInventory`, `ErasureRequest`, `ErasureStep`, `ErasureProgress`, `RequestState`,
+  `StepState` and `AttentionReason` (`retries_exhausted`, `unknown_module`, `subject_unavailable`).
+- `Application\Contract\ErasureRequestStore` and `Infrastructure\Database\DbalErasureRequests`, over the tables
+  `phil_privacy_erasure_request` and `phil_privacy_erasure_step` of `PrivacyTables`, which also purges the closed
+  requests of the store `phil_privacy_erasure_request`; the SQL of both tables for MySQL, MariaDB and PostgreSQL in
+  [The tables](doc/erasure-workflow.md#the-tables).
+- `Application\Contract\ErasureMessages` and `Infrastructure\Outbox\OutboxErasureMessages`, which records the
+  message of each module in the outbox of phil/outbox-bundle.
+- `Application\Message\EraseModule`, `Handler\EraseModuleHandler` and `Exception\ModuleErasureFailed`, which names the
+  request and the module, never the module's failure; `Infrastructure\Outbox\EraseModuleCodec`, which skips the
+  record of a request that is gone, and `EraseModuleRelay`, which hands the message to the bus.
+- `Infrastructure\Messenger\ErasureFailureListener`: on `WorkerMessageFailedEvent`, it waits while `willRetry()` is
+  true, then marks the step and the request as needing attention; `ErasureRequests::replay()` and a message replayed
+  from the failure transport bring the request back to running, and `ErasureRequests::fail()` closes it as failed.
+- `Application\Contract\ExternalPersonalDataEraser`, tagged `phil_privacy.external_eraser`: the erasure sent to an
+  external service with the step's stable idempotency key, the step ending only on `ErasureRequests::acknowledge()`.
+- The progress of an erasure request, `phil_privacy_erasure_progress` at `/erasure/requests/{id}` and its `.json`,
+  shown to the person, to a user granted `erasure_workflow.operator_role`, and for a request made without an account
+  to the holder of its progress link's secret; anyone else gets a 404. `Infrastructure\Http\ErasureProgressController`
+  and the templates `erasure/progress` and `guest/erasure_started`.
+- `phil:privacy:erasure`: a request module by module, `--replay`, and `--fail --confirm`.
+- `GuestRequests::erasesAsAWorkflow()`, `startErasure()` and `WORKFLOW_RETENTION`, and `GuestRequestStore::retain()`:
+  with the workflow on, an opened erasure link opens an erasure request that keeps the identifier of the request made
+  without an account, never the address, which the worker resolves through `GuestSubjects`; that request is kept, its
+  link no longer opening it, until the erasure is closed or for 90 days at most.
+- An optional `ErasureRequests` argument, last, for `AccountDeletions` and `GuestRequests`: the erasure stage of a
+  deletion opens one erasure request under the deletion's identifier and closes the deletion once it completed.
+- `ErasureEffect::Anonymised`, for a skeleton judged non-identifiable, and `ErasureEffect::leavesPersonalData()`;
+  `personal_data_left` in the register's JSON and a column of its Markdown, and the effects that leave personal data
+  marked by `phil:privacy:erase`.
+- [Choosing a control](doc/choosing-a-control.md): which tool answers which problem and where it stops, tier 1 named,
+  the token vault ruled out, the transparent encryption of the database server and the verification of backups.
+- `MisconfiguredPrivacy::erasureLease()`.
+- The paragraphs of section 7 of the Québec *Regulation respecting confidentiality incidents* (chapter A-2.1, r. 3.1) on
+  `Domain\Incident\Incident`: `information` and `undescribedReason` (paragraph 1, never both), `occurredUntil` and
+  `occurrenceApproximate` (paragraph 3), `discoveredUntil` (paragraph 4), `affectedApproximate` (paragraph 5),
+  `riskAssessment` (paragraph 6), `publicNoticeAt` and `publicNoticeReason` (paragraph 7), each text at most
+  `MAX_TEXT` characters and each period never ending before it starts; `missingParagraphs()`, which names the
+  paragraphs a line does not answer yet, and `knownSince()`, the end of the discovery or its date.
+- `Domain\Incident\PublicNoticeReason` (`increased_injury`, `excessive_hardship`, `no_contact_details`,
+  `prompt_action`), the cases of section 6 of the regulation, and `replacesIndividualNotice()`, false for a public
+  notice given to act quickly.
+- `Incident::update()` corrects the summary and the dates of the discovery and of the incident, and empties by name a
+  date or a number recorded by mistake (`clear`, `CLEARABLE`).
+- `Application\Contract\IncidentHistory` and `Domain\Incident\IncidentRevision`: `DbalIncidentRegister` keeps what each
+  field held before a correction in `phil_privacy_incident_revision`, in the transaction of the save, and purges it with
+  its line.
+- `Incident::MINIMUM_RETENTION` (`P5Y`, section 8 of the regulation) and `RetentionPeriod::lastsAtLeast()`: a fixed
+  period shorter than five years on `phil_privacy_incident` fails the container build with a message that cites the
+  section, and `DbalIncidentRegister::purge()` never removes a line known for less than five years, whatever the cutoff
+  it is given.
+- `phil:privacy:incident` takes `--discovered-until`, `--occurred-until`, `--approximate-occurrence`, `--information`,
+  `--undescribed-reason`, `--approximate-affected`, `--risk-assessment`, `--public-notice`, `--public-notice-reason`
+  and `--clear`, and names the paragraphs a line still lacks; `phil:privacy:incidents` prints every field,
+  `missing_paragraphs` and the corrections, in Markdown and in JSON.
+- `phil:privacy:incident-notice <incident> --to=commission|subject|public [--locale=fr|en] [--output=file]`: a draft
+  in Markdown of the notice to the Commission (section 3 of the regulation), of the notice to each person (section 5)
+  or of the public notice (section 6), filled from the register and from the organisation; each rubric the register
+  does not know stays in place marked to complete and is listed after the draft. The draft goes to the standard output
+  or to a new file readable by its owner only; nothing is sent, nothing is recorded, and the draft is never logged.
+- `--follow-up`, with `--since`: the follow-up to the Commission of section 4, with the rubrics of section 3 corrected
+  after the notice, read from `IncidentHistory`.
+- `--to=public` refused for an incident without a public notice reason, with the three cases of section 6; the
+  command reminds when the notice to each person is still owed, and the command that records the date of the notice.
+- `Application\Incident\IncidentNotices`, `IncidentNoticeDraft`, `Exception\NoticeRefused`, and
+  `Domain\Incident\NoticeRecipient`, `NoticeRubric` and `NoticeOrganisation`.
+- `Application\Contract\NoticeOrganisationSource`, and `Infrastructure\LegalNotices\SiteIdentityOrganisation`, which
+  reads the publisher, its registration and the privacy officer from the identity of the site of
+  phil/legal-notices-bundle when it is installed.
+- `Infrastructure\Twig\TwigIncidentNotice` and the templates `@PhilPrivacy/incident_notice/`, with their texts in
+  French and in English in the domain `phil_privacy`.
+- [The drafts of the notices of an incident](doc/incident-notices.md): sections 3 to 6 of the regulation, the rubrics
+  filled and those left to complete, who decides and who sends.
+- The journal of an incident (sections 3.5 and 3.7 of chapter P-39.1): `Domain\Incident\JournalEntry` and
+  `JournalKind` (`third_party_communication`, `notice_deferral`, `deferral_lifted`, `officer_consultation`), numbered
+  per incident from 1 and only ever added to; `Application\Contract\IncidentJournal`, implemented by
+  `DbalIncidentRegister` over the table `phil_privacy_incident_journal`; `Application\Incident\IncidentJournalRecorder`
+  (`record()`, `entries()`, `isDeferred()`), which refuses an unknown incident, an entry before the start of the
+  discovery or ahead of time, a lift without a deferral in force, and a register without a journal, with
+  `Application\Exception\JournalRefused`; `phil:privacy:incident-journal`, which adds an entry or prints the journal.
+
+### Changed
+
+- The comment of `ErasureEffect::Pseudonymised` says that the record is still personal data for whoever holds the
+  link back, instead of a record without anything naming the person.
+- `GuestRequestStore` has `retain()`.
+- The documentation of `SubjectErasure` no longer shows a previous exception on `ErasureIncomplete`.
+- `PrivacyTables::configure()` adds the columns it lacks to a `phil_privacy_incident` already in the schema, and
+  creates `phil_privacy_incident_revision` and `phil_privacy_incident_journal`.
+- `DbalIncidentRegister` takes the clock as an optional second argument, the clock of `pages.clock` in the container;
+  its purge counts from the end of the discovery when it is a period.
+- With `--id`, the summary given to `phil:privacy:incident` replaces the one the line had, and `--discovered` and
+  `--occurred` correct its dates.
+- `Incident::pendingNotifications()` counts a public notice given for a reason that replaces the notice to each person
+  as that notice.
+- [The register of incidents](doc/incidents.md) and [The legal framework](doc/legal-framework.md) cite sections 3.5 to
+  3.8 of the *Act respecting the protection of personal information in the private sector* (chapter P-39.1) and
+  sections 6 to 8 of the regulation, with the SQL of the tables for MySQL 8.4, PostgreSQL 17 and SQLite.
+- `phil:privacy:incidents` prints the journal of each line, in a table of its own in Markdown and under `journal` in
+  JSON, and the purge of `DbalIncidentRegister` removes the journal of a line with it.
+
+### Fixed
+
+- `ConsentContext::sendsGlobalPrivacyControl()` reads every occurrence of `Sec-GPC`, each split on its commas and
+  trimmed: a browser that sent the signal in a second header, or in a list such as `Sec-GPC: 0, 1`, was asked for its
+  consent and could have optional categories granted.
+- Requires the latest minor of each dependency (`twig/twig` 3.31, `monolog/monolog` 3.13,
+  `symfony/event-dispatcher-contracts` 3.8), and of each development requirement (`doctrine/orm` 3.8, `doctrine/dbal`
+  4.6, `doctrine/persistence` 4.2, `symfony/dom-crawler` 8.2, …).
+
 ## 0.2.0-alpha - 2026-11-20
 
 The link of a request without an account points to `public_origin`, and the `prod`

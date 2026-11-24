@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 use Phil\PrivacyBundle\Application\Export\ZipFile;
 use Phil\PrivacyBundle\Infrastructure\Database\DbalAccountDeletions;
+use Phil\PrivacyBundle\Infrastructure\Database\DbalErasureRequests;
+use Phil\PrivacyBundle\Infrastructure\Database\DbalIncidentRegister;
 
 /*
  * What phil/dev-tools reads of this package: its paths and its exceptions to the shared configurations.
@@ -12,8 +14,9 @@ return [
     'paths' => ['src', 'tests'],
     'docs' => [
         'public' => true,
-        // The names of the cryptography and the regular expressions, and the terms of Doctrine and of the redaction.
-        'words' => ['libsodium', 'HMAC', 'PCRE', 'embeddables', 'retagged', 'unredacted', 'uncompiled'],
+        // The names of the cryptography and the regular expressions, the terms of Doctrine and of the redaction, the
+        // reason information cannot be described, and the name of the Québec authority.
+        'words' => ['libsodium', 'HMAC', 'PCRE', 'embeddables', 'retagged', 'unredacted', 'uncompiled', 'undescribed', "d'accès"],
     ],
     'fuzz' => [
         // The readers of what nobody controls, from the seeds of tests/Fuzz/corpus/<target>.
@@ -30,6 +33,13 @@ return [
         'excludePaths' => ['tests/Fuzz/*'],
         // La dette de phil/dev-tools v2 : ce que ses règles relèvent et qui reste à corriger.
         'ignoreErrors' => [
+            // A store named by a number reaches the effects as an integer key, whatever the type says: the test of the
+            // JSON object of the effects gives one on purpose.
+            [
+                'identifier' => 'argument.type',
+                'path' => 'tests/Unit/Infrastructure/Database/DbalErasureRequestsTest.php',
+                'count' => 2,
+            ],
             // à corriger : API interne de Doctrine, PHPUnit à remplacer par une API publique.
             [
                 'identifier' => 'method.internal',
@@ -61,29 +71,55 @@ return [
     ],
     'infection' => [
         'mutators' => [
-            // The length of the salt drawn for an anonymisation (`random_bytes(32)`): 31 or 33 random bytes give a salt
-            // as unpredictable, never kept, which no test can measure. And the 4 GiB limit of the plain ZIP format in
+            // The length of the salt drawn for an anonymisation (`random_bytes(32)`), and of the secret nobody holds that
+            // retires a request's link: 31 or 33 random bytes give a value as unpredictable, never kept, which no test
+            // can measure. And the 4 GiB limit of the plain ZIP format in
             // ZipFile::add(): a test would need more than 4 GiB in memory to reach it.
+            // And the batch of a purge of the register of incidents, and the fallback of a correction's number, which a
+            // NOT NULL INTEGER column never reaches.
             'DecrementInteger' => [
                 'ignoreSourceCodeByRegex' => [
+                    'private const int PURGE_BATCH = 500;',
+                    'is_numeric\\(\\$row\\[\'sequence\'\\]\\) \\? \\(int\\) \\$row\\[\'sequence\'\\] : 0,',
                     '\\$salt \\?\\?= random_bytes\\(32\\);',
+                    '.*\'token_hash\' => hash\\(\'sha256\', random_bytes\\(32\\)\\).*',
                     'if \\(\\$offset \\+ 30 \\+ \\\\strlen\\(\\$name\\) \\+ \\\\strlen\\(\\$compressed\\) > self::MAX_BYTES \\|\\| \\\\strlen\\(\\$content\\) > self::MAX_BYTES\\) \\{',
                 ],
             ],
-            // The salt and the ZIP limit, as for `DecrementInteger`. And the depth of the consent cookie's JSON: its
+            // The salt, the secret and the ZIP limit, as for `DecrementInteger`. And the depth of the consent cookie's JSON: its
             // deepest value, a granted name, sits at depth 3; a fourth level only reads arrays nested in that list,
             // which the shape check refuses right after.
             'IncrementInteger' => [
                 'ignoreSourceCodeByRegex' => [
+                    '.*\\$journal->append\\(new JournalEntry\\(\\$incidentId, 0, .*',
+                    'private const int PURGE_BATCH = 500;',
+                    'is_numeric\\(\\$row\\[\'sequence\'\\]\\) \\? \\(int\\) \\$row\\[\'sequence\'\\] : 0,',
                     '\\$salt \\?\\?= random_bytes\\(32\\);',
+                    '.*\'token_hash\' => hash\\(\'sha256\', random_bytes\\(32\\)\\).*',
                     '\\$data = json_decode\\(sodium_base642bin\\(\\$payload, .*\\), true, 3, \\\\JSON_THROW_ON_ERROR\\);',
                     'if \\(\\$offset \\+ 30 \\+ \\\\strlen\\(\\$name\\) \\+ \\\\strlen\\(\\$compressed\\) > self::MAX_BYTES \\|\\| \\\\strlen\\(\\$content\\) > self::MAX_BYTES\\) \\{',
                 ],
             ],
+            // The reindexing of the steps' modules and the casts of the effects' store names, which only give PHPStan its
+            // types: SQLite and PHP's array keys return the same strings and the same keys with or without them.
+            'UnwrapArrayMap' => [
+                'ignore' => [DbalErasureRequests::class.'::reopen'],
+            ],
+            'CastString' => [
+                'ignore' => [DbalErasureRequests::class.'::readEffects'],
+            ],
             // The identifiers of the due requests come from a column of strings: the filter and the reindexing only give
             // PHPStan the list of strings the database already returns.
+            // The identifiers of the incidents to purge, as for the due requests: a column of strings.
             'UnwrapArrayFilter' => [
-                'ignore' => [DbalAccountDeletions::class.'::dueIdentifiers'],
+                'ignore' => [DbalAccountDeletions::class.'::dueIdentifiers', DbalIncidentRegister::class.'::purge'],
+            ],
+            // A purge whose order falls on the very instant of the floor of five years takes the floor or the order,
+            // which are then the same instant.
+            'LessThan' => [
+                'ignoreSourceCodeByRegex' => [
+                    '.*\\$floor->getTimestamp\\(\\) < \\$order->cutoff->getTimestamp\\(\\).*',
+                ],
             ],
             'UnwrapArrayValues' => [
                 'ignore' => [DbalAccountDeletions::class.'::dueIdentifiers'],
@@ -111,8 +147,20 @@ return [
             // The date parts of the archive's headers come from DateTimeImmutable::format() as decimal strings, which
             // PHP's comparison, arithmetic and shift operators read as the same integers: the casts only give PHPStan
             // its integers.
+            // The number of a correction or of an entry of the journal of incidents: every driver returns the integer of its
+            // column, and PHP adds one to a numeric string as to its integer.
             'CastInt' => [
-                'ignore' => [ZipFile::class.'::__construct', ZipFile::class.'::dosTime', ZipFile::class.'::dosDate'],
+                'ignore' => [ZipFile::class.'::__construct', ZipFile::class.'::dosTime', ZipFile::class.'::dosDate', DbalIncidentRegister::class.'::revise', DbalIncidentRegister::class.'::revisions', DbalIncidentRegister::class.'::append', DbalIncidentRegister::class.'::journal'],
+            ],
+            // The instants RetentionPeriod::lastsAtLeast() compares from: each duration the tests tell apart is told apart
+            // from several of them, so that removing the first or the last leaves the answer as it is.
+            // And the type of the number of a journal entry, which PDO binds as the integer it is: the declared type serves
+            // the drivers that would bind it as a string.
+            'ArrayItemRemoval' => [
+                'ignoreSourceCodeByRegex' => [
+                    'private const array REFERENCES = \\[',
+                    '.*\\], \\[\x27sequence\x27 => ParameterType::INTEGER\\]\\);',
+                ],
             ],
             // The configuration tree always gives `guest_requests.enabled`, which GuestRequestServices reads without a
             // default: the `?? false` that types it for PHPStan is never reached.
@@ -121,10 +169,12 @@ return [
                     '\\$builder->setParameter\\(self::MAILED_LINKS, true === \\(\\$guest\\[\'enabled\'\\] \\?\\? false\\).*',
                 ],
             ],
-            // The names of the archive only answer isset(), which holds for false as for true.
+            // The names of the archive only answer isset(), which holds for false as for true. And the number of a
+            // correction, a column of the primary key, which no platform leaves nullable whatever the column says.
             'TrueValue' => [
                 'ignoreSourceCodeByRegex' => [
                     '\\$this->names\\[\\$name\\] = true;',
+                    '.*\\x27sequence\\x27\\)->setTypeName\\(Types::INTEGER\\)->setNotNull\\(true\\).*',
                 ],
             ],
         ],

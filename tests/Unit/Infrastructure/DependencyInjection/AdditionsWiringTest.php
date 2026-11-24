@@ -6,6 +6,7 @@ namespace Phil\PrivacyBundle\Tests\Unit\Infrastructure\DependencyInjection;
 
 use Doctrine\DBAL\DriverManager;
 use LogicException;
+use Phil\PrivacyBundle\Application\ConfiguredRetentionSchedule;
 use Phil\PrivacyBundle\Application\Contract\ExportReadme;
 use Phil\PrivacyBundle\Application\Contract\GuestLinkSender;
 use Phil\PrivacyBundle\Application\Contract\GuestRequestStore;
@@ -15,10 +16,12 @@ use Phil\PrivacyBundle\Application\Export\ExportPackage;
 use Phil\PrivacyBundle\Application\Export\PlainExportReadme;
 use Phil\PrivacyBundle\Application\GuestRequest\EmailGuestSubjects;
 use Phil\PrivacyBundle\Application\GuestRequest\GuestRequests;
+use Phil\PrivacyBundle\Application\Incident\IncidentJournalRecorder;
 use Phil\PrivacyBundle\Domain\Consent\ConsentPolicy;
 use Phil\PrivacyBundle\Domain\Cookie\CookieInventory;
 use Phil\PrivacyBundle\Domain\Cookie\DeclaredCookie;
 use Phil\PrivacyBundle\Infrastructure\Console\IncidentCommand;
+use Phil\PrivacyBundle\Infrastructure\Console\IncidentJournalCommand;
 use Phil\PrivacyBundle\Infrastructure\Console\IncidentsCommand;
 use Phil\PrivacyBundle\Infrastructure\Database\DbalGuestRequests;
 use Phil\PrivacyBundle\Infrastructure\Database\DbalIncidentRegister;
@@ -48,6 +51,7 @@ use Symfony\Component\Config\FileLocator;
 use Symfony\Component\Config\Resource\FileExistenceResource;
 use Symfony\Component\Config\Resource\FileResource;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\DependencyInjection\Extension\ConfigurationExtensionInterface;
 use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
 use Symfony\Component\DependencyInjection\Loader\PhpFileLoader;
@@ -217,12 +221,50 @@ final class AdditionsWiringTest extends TestCase
         self::assertSame(DbalIncidentRegister::class, (string) $container->getAlias(IncidentRegister::class));
         self::assertTrue($container->getAlias(IncidentRegister::class)->isPublic());
         self::assertTrue($container->getDefinition(DbalIncidentRegister::class)->hasTag(RightsServices::PURGER_TAG));
+        self::assertEquals([new Reference('database_connection'), new Reference('clock', ContainerInterface::NULL_ON_INVALID_REFERENCE)], $container->getDefinition(DbalIncidentRegister::class)->getArguments());
         self::assertTrue($container->getDefinition(IncidentCommand::class)->hasTag('console.command'));
         self::assertTrue($container->getDefinition(IncidentsCommand::class)->hasTag('console.command'));
+        self::assertEquals([new Reference(IncidentRegister::class), new Reference('clock')], $container->getDefinition(IncidentJournalRecorder::class)->getArguments());
+        self::assertEquals([new Reference(IncidentJournalRecorder::class), new Reference('clock')], $container->getDefinition(IncidentJournalCommand::class)->getArguments());
+        self::assertTrue($container->getDefinition(IncidentJournalCommand::class)->hasTag('console.command'));
         self::assertSame(TwigExportReadme::class, (string) $container->getAlias(ExportReadme::class));
         self::assertEquals([new Reference(ExportReadme::class), new Reference('clock')], $container->getDefinition(ExportPackage::class)->getArguments());
         self::assertSame('app.incidents', (string) $this->load(['incidents' => ['store' => 'app.incidents']])->getAlias(IncidentRegister::class));
         self::assertTrue($container->getDefinition(EmbedExtension::class)->hasTag('twig.attribute_extension'));
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function incidentPeriodsBelowFiveYears(): iterable
+    {
+        yield 'a year' => ['P1Y'];
+        yield 'a day short' => ['P4Y364D'];
+        yield '1826 days, short of a leap day' => ['P1826D'];
+        yield 'months' => ['P59M'];
+    }
+
+    #[DataProvider('incidentPeriodsBelowFiveYears')]
+    public function testARuleKeepingTheIncidentsLessThanFiveYearsStopsTheBuild(string $period): void
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessageIsOrContains(\sprintf('phil_privacy.retention.rules.R-INC: the register of confidentiality incidents is kept at least five years after the discovery (section 8 of the Regulation respecting confidentiality incidents, chapter A-2.1, r. 3.1); "%s" is shorter than P5Y.', $period));
+
+        $this->load(['retention' => ['rules' => ['R-INC' => ['store' => 'phil_privacy_incident', 'categories' => [], 'period' => $period, 'mechanism' => 'job', 'erasure' => 'survives', 'access' => 'not_returned']]]]);
+    }
+
+    public function testFiveYearsOrMoreOnTheIncidentsAndAnyPeriodElsewhereAreKept(): void
+    {
+        $rules = [];
+
+        foreach (['P5Y', 'P60M', 'P1827D', 'P7Y'] as $index => $period) {
+            $rules['R-INC-'.$index] = ['store' => 'phil_privacy_incident', 'categories' => [], 'period' => $period, 'mechanism' => 'job', 'erasure' => 'survives', 'access' => 'not_returned'];
+        }
+
+        $rules['R-INC-forever'] = ['store' => 'phil_privacy_incident', 'categories' => [], 'period' => 'indefinite', 'mechanism' => 'manual', 'erasure' => 'survives', 'access' => 'not_returned'];
+        $rules['R-LOG'] = ['store' => 'app_log', 'categories' => [], 'period' => 'P1Y', 'mechanism' => 'job', 'erasure' => 'survives', 'access' => 'not_returned'];
+
+        self::assertTrue($this->load(['retention' => ['rules' => $rules]])->hasDefinition(ConfiguredRetentionSchedule::class));
     }
 
     public function testWithoutADatabaseTheIncidentsAndTheGuestTableGo(): void
@@ -352,6 +394,8 @@ final class AdditionsWiringTest extends TestCase
             IncidentRegister::class => DbalIncidentRegister::class,
             IncidentCommand::class => IncidentCommand::class,
             IncidentsCommand::class => IncidentsCommand::class,
+            IncidentJournalRecorder::class => IncidentJournalRecorder::class,
+            IncidentJournalCommand::class => IncidentJournalCommand::class,
             GuestRequests::class => GuestRequests::class,
             GuestRequestController::class => GuestRequestController::class,
             GuestLinkSender::class => MailerGuestLinkSender::class,

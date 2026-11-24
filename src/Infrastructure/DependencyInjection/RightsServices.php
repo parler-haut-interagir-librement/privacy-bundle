@@ -15,14 +15,18 @@ use Phil\PrivacyBundle\Application\Contract\EmailTrackingStore;
 use Phil\PrivacyBundle\Application\Contract\ExportArchive;
 use Phil\PrivacyBundle\Application\Contract\ExportReadme;
 use Phil\PrivacyBundle\Application\Contract\IncidentRegister;
+use Phil\PrivacyBundle\Application\Contract\NoticeOrganisationSource;
 use Phil\PrivacyBundle\Application\Contract\RetentionPurger;
 use Phil\PrivacyBundle\Application\EmailTracking\EmailTrackingConsents;
+use Phil\PrivacyBundle\Application\Erasure\ErasureRequests;
 use Phil\PrivacyBundle\Application\Export\ExportPackage;
 use Phil\PrivacyBundle\Application\Export\PlainExportReadme;
 use Phil\PrivacyBundle\Application\GuestRequest\GuestRequests;
 use Phil\PrivacyBundle\Application\Handler\AdvanceAccountDeletionHandler;
 use Phil\PrivacyBundle\Application\Handler\ProcessDueAccountDeletionsHandler;
 use Phil\PrivacyBundle\Application\Handler\RunRetentionHandler;
+use Phil\PrivacyBundle\Application\Incident\IncidentJournalRecorder;
+use Phil\PrivacyBundle\Application\Incident\IncidentNotices;
 use Phil\PrivacyBundle\Application\Message\AdvanceAccountDeletion;
 use Phil\PrivacyBundle\Application\Message\ProcessDueAccountDeletions;
 use Phil\PrivacyBundle\Application\Message\RunRetention;
@@ -37,9 +41,13 @@ use Phil\PrivacyBundle\Domain\Consent\ConsentPolicy;
 use Phil\PrivacyBundle\Domain\Consent\ConsentToken;
 use Phil\PrivacyBundle\Domain\Cookie\CookieInventory;
 use Phil\PrivacyBundle\Domain\Exception\InvalidPrivacyValue;
+use Phil\PrivacyBundle\Domain\Incident\Incident;
 use Phil\PrivacyBundle\Domain\Retention\RetentionPeriod;
+use Phil\PrivacyBundle\Domain\Retention\RetentionSchedule;
 use Phil\PrivacyBundle\Infrastructure\Console\DisabledRightsWarning;
 use Phil\PrivacyBundle\Infrastructure\Console\IncidentCommand;
+use Phil\PrivacyBundle\Infrastructure\Console\IncidentJournalCommand;
+use Phil\PrivacyBundle\Infrastructure\Console\IncidentNoticeCommand;
 use Phil\PrivacyBundle\Infrastructure\Console\IncidentsCommand;
 use Phil\PrivacyBundle\Infrastructure\Console\ProcessDeletionsCommand;
 use Phil\PrivacyBundle\Infrastructure\Console\RunRetentionCommand;
@@ -48,12 +56,14 @@ use Phil\PrivacyBundle\Infrastructure\Database\DbalConsentProofs;
 use Phil\PrivacyBundle\Infrastructure\Database\DbalEmailTrackingConsents;
 use Phil\PrivacyBundle\Infrastructure\Database\DbalGuestRequests;
 use Phil\PrivacyBundle\Infrastructure\Database\DbalIncidentRegister;
+use Phil\PrivacyBundle\Infrastructure\Database\PrivacyTables;
 use Phil\PrivacyBundle\Infrastructure\Doctrine\PrivacySchemaListener;
 use Phil\PrivacyBundle\Infrastructure\Filesystem\EncryptedExportArchive;
 use Phil\PrivacyBundle\Infrastructure\Http\ConsentContext;
 use Phil\PrivacyBundle\Infrastructure\Http\ConsentController;
 use Phil\PrivacyBundle\Infrastructure\Http\ConsentCookie;
 use Phil\PrivacyBundle\Infrastructure\Http\ConsentVaryListener;
+use Phil\PrivacyBundle\Infrastructure\Http\ErasureProgressController;
 use Phil\PrivacyBundle\Infrastructure\Http\GuestRequestController;
 use Phil\PrivacyBundle\Infrastructure\Http\PreferencesController;
 use Phil\PrivacyBundle\Infrastructure\Http\PrivacyPages;
@@ -64,6 +74,7 @@ use Phil\PrivacyBundle\Infrastructure\Security\SecurityCurrentDataSubject;
 use Phil\PrivacyBundle\Infrastructure\Twig\ConsentExtension;
 use Phil\PrivacyBundle\Infrastructure\Twig\EmbedExtension;
 use Phil\PrivacyBundle\Infrastructure\Twig\TwigExportReadme;
+use Phil\PrivacyBundle\Infrastructure\Twig\TwigIncidentNotice;
 use Symfony\Component\Config\Definition\Exception\InvalidConfigurationException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\DependencyInjection\Argument\TaggedIteratorArgument;
@@ -79,6 +90,7 @@ use Symfony\Component\Workflow\StateMachine;
  * retention rules are checked here, so that a bad one fails the container build rather than a request.
  *
  * @phpstan-import-type RuleConfig from ConfiguredRetentionSchedule
+ * @phpstan-import-type WorkflowConfig from ErasureWorkflowServices
  *
  * @phpstan-type ConsentConfig array{version: string, cookie_name: string, lifetime: string, proofs: string|null, categories: array<array-key, array{necessary: bool, labels: array<string, string>, descriptions: array<string, string>}>}
  * @phpstan-type LimitConfig array{limit: int, interval: string}
@@ -90,6 +102,7 @@ use Symfony\Component\Workflow\StateMachine;
  *     consent: ConsentConfig,
  *     cookies: array{inventory: string|null, watch: bool|null},
  *     guest_requests: GuestConfig,
+ *     erasure_workflow: WorkflowConfig,
  *     incidents: array{store: string|null},
  *     email_tracking: array{enabled: bool, version: string, store: string|null},
  *     rights: array{export: array{disable: scalar|null}, erasure: array{disable: scalar|null}},
@@ -122,7 +135,7 @@ final class RightsServices
         $builder->registerForAutoconfiguration(RetentionPurger::class)->addTag(self::PURGER_TAG);
         $clock = new Reference($config['pages']['clock']);
 
-        self::database($services, $connection, $config['incidents']['store']);
+        self::database($services, $connection, $config['incidents']['store'], $clock);
         self::emailTracking($config['email_tracking'], $services, $clock);
         $rights = self::rights($config['rights'], $services);
         self::export($services);
@@ -130,6 +143,7 @@ final class RightsServices
         self::consent($config['consent'], $services, $builder, $clock);
         CookieServices::load($config['consent'], $config['cookies'], $services, $builder);
         GuestRequestServices::load($config['guest_requests'], $services, $clock);
+        ErasureWorkflowServices::load($config['erasure_workflow'], $services, $builder, $connection, $clock);
         self::pages($config['pages'], $services);
         $source = self::retention($config, $services, $clock);
         self::schedule($config, $services, $source instanceof Reference);
@@ -138,20 +152,35 @@ final class RightsServices
         return $source;
     }
 
-    private static function database(ServicesConfigurator $services, Reference $connection, ?string $incidents): void
+    private static function database(ServicesConfigurator $services, Reference $connection, ?string $incidents, Reference $clock): void
     {
         $services->set(DbalAccountDeletions::class)->args([$connection])->tag(self::PURGER_TAG);
         $services->set(DbalConsentProofs::class)->args([$connection])->tag(self::PURGER_TAG);
         $services->set(DbalGuestRequests::class)->args([$connection, '%kernel.secret%']);
-        $services->set(DbalIncidentRegister::class)->args([$connection])->tag(self::PURGER_TAG);
+        $services->set(DbalIncidentRegister::class)->args([$connection, new Reference((string) $clock, ContainerInterface::NULL_ON_INVALID_REFERENCE)])->tag(self::PURGER_TAG);
         $services->set(DbalEmailTrackingConsents::class)->args([$connection]);
         $services->set(PrivacySchemaListener::class)->args([$connection])->tag('doctrine.event_listener', ['event' => 'postGenerateSchema']);
         $services->alias(IncidentRegister::class, $incidents ?? DbalIncidentRegister::class)->public();
+        $services->set(IncidentJournalRecorder::class)->args([new Reference(IncidentRegister::class), new Reference('clock')])->public();
+        self::notices($services);
 
         if (class_exists(Command::class)) {
             $services->set(IncidentCommand::class)->args([new Reference(IncidentRegister::class), new Reference('clock')])->tag('console.command');
             $services->set(IncidentsCommand::class)->args([new Reference(IncidentRegister::class)])->tag('console.command');
+            $services->set(IncidentJournalCommand::class)->args([new Reference(IncidentJournalRecorder::class), new Reference('clock')])->tag('console.command');
+            $services->set(IncidentNoticeCommand::class)->args([new Reference(IncidentRegister::class), new Reference(IncidentNotices::class), new Reference(TwigIncidentNotice::class), new Reference('clock')])->tag('console.command');
         }
+    }
+
+    /**
+     * The drafts of the notices of an incident. Who gives them comes from a `NoticeOrganisationSource` the application
+     * names, or from the identity of the site of phil/legal-notices (`PrivacyServicesPass`); without one, the drafts
+     * leave those rubrics to complete. Nothing here can send a notice.
+     */
+    private static function notices(ServicesConfigurator $services): void
+    {
+        $services->set(IncidentNotices::class)->args([new Reference(NoticeOrganisationSource::class, ContainerInterface::NULL_ON_INVALID_REFERENCE)]);
+        $services->set(TwigIncidentNotice::class)->args([new Reference('twig')]);
     }
 
     /**
@@ -303,6 +332,16 @@ final class RightsServices
             ->args([new Reference(ConsentContext::class), new Reference(ConsentPolicy::class), new Reference(PrivacyPages::class), new Reference('request_stack')])
             ->tag('twig.attribute_extension')
             ->tag('twig.runtime');
+        $services->set(ErasureProgressController::class)
+            ->args([
+                new Reference(PrivacyPages::class),
+                new Reference(ErasureRequests::class, ContainerInterface::NULL_ON_INVALID_REFERENCE),
+                new Reference(CurrentDataSubject::class, ContainerInterface::NULL_ON_INVALID_REFERENCE),
+                new Reference('security.authorization_checker', ContainerInterface::NULL_ON_INVALID_REFERENCE),
+                '%'.ErasureWorkflowServices::OPERATOR_ROLE.'%',
+            ])
+            ->public()
+            ->tag('controller.service_arguments');
         $services->set(GuestRequestController::class)
             ->args([new Reference(PrivacyPages::class), new Reference(GuestRequests::class, ContainerInterface::NULL_ON_INVALID_REFERENCE)])
             ->public()
@@ -344,10 +383,12 @@ final class RightsServices
 
         if ([] !== $rules) {
             try {
-                new ConfiguredRetentionSchedule($rules);
+                $schedule = new ConfiguredRetentionSchedule($rules)->load();
             } catch (InvalidPrivacyValue $invalidPrivacyValue) {
                 throw new InvalidConfigurationException('phil_privacy.retention.rules: '.$invalidPrivacyValue->getMessage(), $invalidPrivacyValue->getCode(), previous: $invalidPrivacyValue);
             }
+
+            self::incidentFloor($schedule);
 
             $services->set(ConfiguredRetentionSchedule::class)->args([$rules]);
             $named = ConfiguredRetentionSchedule::class;
@@ -369,6 +410,21 @@ final class RightsServices
         }
 
         return $source;
+    }
+
+    /**
+     * Section 8 of the Québec regulation keeps the register of incidents at least five years after the discovery: a rule
+     * on its table that would purge sooner fails the build. The purge itself never goes below that floor either.
+     */
+    private static function incidentFloor(RetentionSchedule $schedule): void
+    {
+        $minimum = RetentionPeriod::fixed(Incident::MINIMUM_RETENTION);
+
+        foreach ($schedule->rules() as $rule) {
+            if (PrivacyTables::INCIDENTS === $rule->store && !$rule->period->lastsAtLeast($minimum)) {
+                throw new InvalidConfigurationException(\sprintf('phil_privacy.retention.rules.%s: the register of confidentiality incidents is kept at least five years after the discovery (section 8 of the Regulation respecting confidentiality incidents, chapter A-2.1, r. 3.1); "%s" is shorter than %s.', $rule->id, $rule->period->duration ?? '', Incident::MINIMUM_RETENTION));
+            }
+        }
     }
 
     /**
