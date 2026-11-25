@@ -43,6 +43,7 @@ use Symfony\Component\HttpFoundation\Request;
  *         denylist: [password, token, secret, authorization, cookie]
  *         token_path_prefixes: ['/p/']
  *         short_options: { p: password }
+ *         personal_data_categories: [email, person_name, nickname, phone, ip, contact]
  * ```
  *
  * It autoconfigures the export and erasure ports, `PersonalDataExporter` and `PersonalDataEraser`, with
@@ -69,6 +70,9 @@ final class PhilPrivacyBundle extends AbstractBundle
     public const string LOCALE_PACK_TAG = AnonymizationServices::LOCALE_PACK_TAG;
 
     public const string DATABASE_IDENTITY = AnonymizationServices::DATABASE_IDENTITY;
+
+    /** The tables of the bundle the schema listener adds, those of the features on whose store is the table of the bundle. */
+    public const string TABLES = PrivacyServicesPass::TABLES_PARAMETER;
 
     /** Whether the requests without an account send their links through the bundle's mailer sender, read when the kernel boots. */
     public const string MAILED_LINKS = 'phil_privacy.guest_requests.mailed_links';
@@ -103,6 +107,11 @@ final class PhilPrivacyBundle extends AbstractBundle
                             ->info('Path prefixes, such as "/p/", whose next segment is a token.')
                             ->scalarPrototype()->end()
                             ->defaultValue([])
+                        ->end()
+                        ->arrayNode('personal_data_categories')
+                            ->info('Categories of #[PersonalData] whose names are denied keys too, such as "email": a context that logs an address under "email" logs "[redacted]". An empty list turns this off.')
+                            ->scalarPrototype()->end()
+                            ->defaultValue(RedactingProcessor::PERSONAL_DATA_CATEGORIES)
                         ->end()
                         ->arrayNode('short_options')
                             ->info('Short command line options to redact, each letter to the long option name it stands for, such as { p: password }; the value is redacted when the denylist denies that name. Empty, no short option is read: a letter says nothing about itself.')
@@ -227,11 +236,12 @@ final class PhilPrivacyBundle extends AbstractBundle
         $denylist = $this->strings($redaction, 'denylist');
         $prefixes = $this->strings($redaction, 'token_path_prefixes');
         $shortOptions = $this->shortOptions($redaction);
+        $categories = $this->strings($redaction, 'personal_data_categories');
 
         // Built once here so that a bad entry fails the container build rather than the first log line. The
         // domain refuses a malformed key or prefix with its own exception, an `InvalidArgumentException`.
         try {
-            RedactingProcessor::fromConfiguration($denylist, $prefixes, $shortOptions);
+            RedactingProcessor::fromConfiguration($denylist, $prefixes, $shortOptions, $categories);
         } catch (InvalidArgumentException $invalidArgumentException) {
             throw new InvalidConfigurationException('phil_privacy.log_redaction: '.$invalidArgumentException->getMessage(), 0, $invalidArgumentException);
         }
@@ -244,7 +254,7 @@ final class PhilPrivacyBundle extends AbstractBundle
         $services
             ->set(RedactingProcessor::class)
             ->factory([RedactingProcessor::class, 'fromConfiguration'])
-            ->args([$denylist, $prefixes, $shortOptions])
+            ->args([$denylist, $prefixes, $shortOptions, $categories])
             ->tag('monolog.processor');
 
         // Each module's exporter and eraser, found by autoconfiguration; the answers assembled in module order.
@@ -298,8 +308,9 @@ final class PhilPrivacyBundle extends AbstractBundle
     #[Override]
     public function build(ContainerBuilder $container): void
     {
-        $container->addCompilerPass(new DatabaseServicesPass());
-        $container->addCompilerPass(new PrivacyServicesPass());
+        // Priority 1: before the MessengerPass of symfony/messenger (priority 0, from a bundle registered before this one), which wires the handlers and middleware these passes may remove or add.
+        $container->addCompilerPass(new DatabaseServicesPass(), priority: 1);
+        $container->addCompilerPass(new PrivacyServicesPass(), priority: 1);
     }
 
     #[Override]

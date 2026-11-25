@@ -1,4 +1,4 @@
-<!-- phil-dev source-sha256=119649ebd343bd236d8b6e486aefa94377bc0ee2bfbef2caa96788f3c95464f6 -->
+<!-- phil-dev source-sha256=0d63b39c31a109011fa2091bac070f60e64391ef84ccd94db09f419fe286cea5 -->
 # Installation
 
 ## Prérequis
@@ -60,6 +60,50 @@ return [
 
 Enregistrez-le dans chaque environnement : le caviardage des journaux compte autant en `dev` et en `test` qu'en `prod`,
 parce que ces journaux sont copiés dans des billets et des artefacts de CI.
+
+## Les tables
+
+`doctrine:migrations:diff` écrit les tables des fonctionnalités que l'application utilise avec la table du bundle pour
+stockage, et elles seules :
+
+| Table | Fonctionnalité | Ajoutée quand |
+|---|---|---|
+| `phil_privacy_account_deletion` | [Les suppressions de compte](account-deletion.md) | `account_deletion.enabled` vaut true, ou null avec `symfony/security-bundle` dans le noyau ; `account_deletion.store` vaut null ; le verrou et l'horloge sont là. |
+| `phil_privacy_consent_proof` | [Les preuves de consentement](consent.md) | La page de consentement est là (Twig, les jetons CSRF, le routeur et l'horloge) et `consent.proofs` vaut null. |
+| `phil_privacy_guest_request` | [Les demandes sans compte](requests-without-an-account.md) | `guest_requests.enabled` vaut true et `guest_requests.store` vaut null. |
+| `phil_privacy_incident`, `phil_privacy_incident_revision`, `phil_privacy_incident_journal` | [Le registre des incidents](incidents.md) | `incidents.enabled` vaut true, sa valeur par défaut, et `incidents.store` vaut null. |
+| `phil_privacy_email_tracking` | [Le consentement aux courriels suivis](email-tracking.md) | `email_tracking.enabled` vaut true et `email_tracking.store` vaut null. |
+| `phil_privacy_erasure_request`, `phil_privacy_erasure_step` | [L'effacement en flux de travail](erasure-workflow.md) | `erasure_workflow.enabled` vaut true et `erasure_workflow.store` vaut null. |
+
+Une application avec un pare-feu et les valeurs par défaut reçoit donc les suppressions de compte, les preuves de
+consentement et le registre des incidents ; une application sans `symfony/security-bundle` reçoit les preuves et le
+registre. Sans Doctrine DBAL, aucune : les preuves de consentement deviennent des lignes de journal, et les autres
+fonctionnalités demandent un stockage de l'application.
+
+## Passer à la version 0.4
+
+**Les tables suivent les fonctionnalités.** La table d'une fonctionnalité éteinte, ou gardée par un stockage de
+l'application, n'est plus dans le schéma de l'ORM : le prochain `doctrine:migrations:diff` écrit un `DROP TABLE` pour
+elle. Lisez cette migration avant de l'exécuter. Une application sans `symfony/security-bundle` qui utilisait les
+suppressions de compte les garde, avec `phil_privacy_account_deletion`, par `account_deletion.enabled: true` ; une
+table que l'application veut garder sans sa fonctionnalité sort de la comparaison par le `schema_filter` de
+DoctrineBundle.
+
+**Les clés.** Chaque clé que le bundle dérive du secret de l'application (`kernel.secret`) est désormais son HKDF-SHA-256 sous une
+étiquette à elle (voir [Modèle de menaces](threat-model.md#les-clés)). Ce qui a été scellé ou signé sous les clés de la
+version 0.3 ne s'ouvre plus :
+
+- **Les demandes sans compte** de `phil_privacy_guest_request` se lisent comme absentes : leurs liens ne les ouvrent
+  plus. Videz la table, ou laissez `link_lifetime` et la purge à chaque nouvelle demande les retirer, et demandez aux
+  personnes qui attendaient de refaire leur demande.
+- **Les archives d'export** gardées par `EncryptedExportArchive` (`account_deletion.export_directory`) se lisent comme
+  absentes. Supprimez les fichiers de ce répertoire, ou laissez le balayage les retirer à leur expiration.
+- **Le témoin de consentement** se lit comme aucun choix : chaque visiteur revoit la bannière et choisit de nouveau. Les
+  preuves de `phil_privacy_consent_proof` sont gardées telles quelles.
+- **Les limites de débit** des demandes sans compte repartent de zéro.
+
+Un `kernel.secret` vide arrête désormais le bundle avec `InvalidPrivacyValue` quand l'un de ces services est construit,
+au lieu de dériver des clés que n'importe qui peut calculer.
 
 ## Étapes suivantes
 

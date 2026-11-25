@@ -4,6 +4,63 @@ All notable changes to `phil/privacy-bundle` will be documented in this file.
 
 Updates should follow the [Keep a CHANGELOG](https://keepachangelog.com/) principles.
 
+## 0.4.0-alpha - 2026-11-25
+
+Every key the bundle derives from the application secret is its HKDF-SHA-256 under a label of its own: the requests
+without an account, the export archives and the consent cookies of 0.3 no longer open. See
+[Upgrading to 0.4](doc/installation.md#upgrading-to-04) and the [Threat model](doc/threat-model.md).
+
+The schema gets only the tables of the features the application uses with the table of the bundle as their store, and
+the account deletions are on by default only with `symfony/security-bundle`: read the next migration
+`doctrine:migrations:diff` writes, which drops the tables of the features that are off. See
+[The tables](doc/installation.md#the-tables).
+
+### Added
+
+- `account_deletion.enabled`: null by default, the account deletions on when `symfony/security-bundle` is among the
+  bundles of the kernel; true or false forces them, and true without the lock, the clock or a store fails the build
+  with a `LogicException`.
+- `incidents.enabled`: true by default; false takes out the register of incidents, its journal, the drafts of its
+  notices and its commands.
+- The parameter `phil_privacy.tables` (`PhilPrivacyBundle::TABLES`), the tables the schema listener adds, and
+  `PrivacyTables::ALL`, every table of the bundle.
+
+- `Domain\Secret\KeyDerivation`: the keys of the bundle, each the HKDF-SHA-256 (RFC 5869) of the application secret
+  under the label of its usage, `phil_privacy.guest_request_store`, `phil_privacy.guest_requests.client`,
+  `phil_privacy.guest_requests.address`, `phil_privacy.export_archive` and `phil_privacy.consent`.
+- [Threat model](doc/threat-model.md): the assets, the keys and their labels, the trust boundaries, the threats and
+  their defences, the risks left to the application.
+
+### Changed
+
+- `PrivacySchemaListener` adds only the tables of the features in use whose store is the table of the bundle: the
+  account deletions, the proofs of consent while the consent page is there, the requests without an account, the
+  register of incidents, the consent to tracked emails and the erasure workflow. `PrivacyTables::configure()` takes
+  the tables to add as a third argument, all of them when it is null. The stores of the bundle that no feature uses
+  are no longer registered.
+- Without `symfony/security-bundle`, the account deletions, their workflow, handlers and command, and the table
+  `phil_privacy_account_deletion` are absent unless `account_deletion.enabled` is true.
+- The schedule `phil_privacy` keeps the retention when the account deletions are absent, and goes once it has neither.
+- `GuestRequests`, `DbalGuestRequests`, `EncryptedExportArchive` and `ConsentToken` take their keys from
+  `KeyDerivation` instead of an HMAC of a label keyed with the secret. The addresses of the requests without an account
+  and the export archives sealed by 0.3 read as absent, a consent cookie signed by 0.3 reads as no choice, and the rate
+  limits of requests without an account start again from zero.
+- The per-client and per-address limits of requests without an account are keyed under two keys, one each, instead of
+  one key and a prefix.
+
+### Fixed
+
+- The compiler pass that removes Messenger handlers runs before the one of
+  `symfony/messenger`, which Symfony 8.2.0-RC1 registers in its own bundle at the default priority: the container no
+  longer fails to build with a handler locator that names a removed service.
+
+### Security
+
+- Requires `twig/twig` 3.31.1 or later, which fixes the advisories of its sandbox published on 2026-11-24.
+- The keys are derived by HKDF with one label per usage (RFC 5869), where the secret is the input keying material,
+  instead of being the message of an HMAC keyed with a public label. An empty `kernel.secret` is refused with
+  `InvalidPrivacyValue` instead of giving keys anyone can compute.
+
 ## 0.3.0-alpha - 2026-11-24
 
 The erasure can run as a workflow, one step per module through phil/outbox-bundle,
@@ -29,10 +86,16 @@ which adds nine columns to `phil_privacy_incident`, nullable or false by default
 on `phil_privacy_incident` now fails the container build: raise it to `P5Y` or more. An `IncidentRegister` of your own
 that also purges keeps at least five years from the discovery. Code that reads the JSON of `phil:privacy:incidents`
 finds the new fields, and its Markdown ten columns more, a table of corrections and a table of the journal;
-`phil:privacy:incident` prints the paragraphs a line still lacks.
+`phil:privacy:incident` prints the paragraphs a line still lacks. The logs lose the values under `email`,
+`person_name`, `nickname`, `phone`, `ip` and `contact`, and every object of a context but a throwable: set
+`log_redaction.personal_data_categories: []` to keep those keys, and log the value a line needs rather than its object.
 
 ### Added
 
+- `log_redaction.personal_data_categories`, by default `RedactingProcessor::PERSONAL_DATA_CATEGORIES` — `email`,
+  `person_name`, `nickname`, `phone`, `ip` and `contact`: each category of `#[PersonalData]` is a denied key of the
+  log redaction, beside the `denylist`; `RedactingProcessor::fromConfiguration()` takes them, last and optional, and
+  refuses a malformed category.
 - Erasure as a workflow, `erasure_workflow` (`enabled`, `lease`, `operator_role`, `store`), off by default:
   `Application\Erasure\ErasureRequests`, which opens a request for every module of the erasure inventory or for the
   modules named, a module the inventory does not declare refused, and keeps the inventory's version on it; one
@@ -150,6 +213,14 @@ finds the new fields, and its Markdown ten columns more, a table of corrections 
 - Requires the latest minor of each dependency (`twig/twig` 3.31, `monolog/monolog` 3.13,
   `symfony/event-dispatcher-contracts` 3.8), and of each development requirement (`doctrine/orm` 3.8, `doctrine/dbal`
   4.6, `doctrine/persistence` 4.2, `symfony/dom-crawler` 8.2, …).
+
+### Security
+
+- `ContextRedactor` left an object of a context as it was: the formatter of Monolog wrote its public properties, or
+  what it serialised to, and a message or a DTO of another bundle reached the log whole, personal data included. Any
+  object but a throwable is replaced by its class name at any depth, and a case of an enum by its class and case.
+- The log redaction denied no key by default: an address logged under `email` reached the log. The categories of
+  personal data are denied by default.
 
 ## 0.2.0-alpha - 2026-11-20
 

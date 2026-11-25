@@ -1,4 +1,4 @@
-<!-- phil-dev source-sha256=1156659ac3b9cc7e255daa01e2a35b95286f9b749e1ac4fedd5b8bff6b38b277 -->
+<!-- phil-dev source-sha256=50cbbd2189ce7e763c3d415b8f66c887b7fb46f44d262bca8e826bcc36e237ae -->
 # Référence de la configuration
 
 L'alias de l'extension est `phil_privacy`. L'arbre de configuration est défini dans `PhilPrivacyBundle::configure()` et
@@ -32,6 +32,7 @@ registre ne nomme que les règles.
 
 | Clé | Par défaut | Effet |
 |---|---|---|
+| `enabled` | `null` | Si les membres peuvent demander la suppression de leur compte ; `null`, actif quand `symfony/security-bundle` est parmi les bundles du noyau, l'application ayant alors des comptes. `true` demande le verrou, l'horloge et un stockage, et fait échouer la construction sans eux ; `false` n'enregistre rien des suppressions. |
 | `delay` | `P30D` | Combien de temps une demande peut être annulée. Une durée nulle est refusée. |
 | `frequency` | `15 minutes` | La fréquence à laquelle le calendrier `phil_privacy` cherche ce qui est échu. |
 | `store` | `null` | Identifiant de service d'un `AccountDeletionStore` ; `null`, la table du bundle. |
@@ -80,8 +81,12 @@ L'effacement comme workflow, inactif par défaut ; voir [erasure-workflow.md](er
 
 ### `phil_privacy.incidents`
 
-`store` : l'identifiant de service d'un `IncidentRegister` ; `null` (par défaut), la table du bundle. Voir
-[incidents.md](incidents.md).
+| Clé | Par défaut | Effet |
+|---|---|---|
+| `enabled` | `true` | Le registre des incidents de confidentialité, son journal, les brouillons de ses avis et ses commandes ; `false` quand l'application tient son registre ailleurs. |
+| `store` | `null` | L'identifiant de service d'un `IncidentRegister` ; `null`, les tables du bundle. |
+
+Voir [incidents.md](incidents.md).
 
 ### `phil_privacy.email_tracking`
 
@@ -168,6 +173,8 @@ phil_privacy:
         # The value is redacted only when the denylist denies that long name.
         short_options:
             p: password
+        # The categories of #[PersonalData] whose names are denied keys too.
+        personal_data_categories: [email, person_name, nickname, phone, ip, contact, birth_date]
     database:
         connection: database_connection   # a Doctrine DBAL connection service
     anonymization:
@@ -205,6 +212,20 @@ composant Config (`Unrecognized option ... under "phil_privacy"`).
 - Les listes de plusieurs fichiers de configuration sont mises bout à bout, comme toute liste à prototype dans Symfony.
 - La même liste gouverne trois choses : les clés du contexte et de `extra`, les noms d'options longues dans les lignes
   de commande, et les noms longs vers lesquels pointe `short_options`. Voir [log-redaction.md](log-redaction.md).
+
+### `phil_privacy.log_redaction.personal_data_categories`
+
+| | |
+|---|---|
+| Type | liste de scalaires, chacun une chaîne |
+| Par défaut | `[email, person_name, nickname, phone, ip, contact]`, `RedactingProcessor::PERSONAL_DATA_CATEGORIES` |
+| Effet | Chaque catégorie de `#[PersonalData]` est aussi une clé refusée, à côté de la `denylist`. |
+
+- Chaque entrée est une catégorie : un jeton `snake_case` en minuscules d'au plus 64 caractères. `Birth Date` fait
+  échouer la construction.
+- Une catégorie est comparée comme une clé, exactement : `email` refuse `email`, `Email` et `e-mail`, pas `email_count`.
+- Écrire la liste remplace la valeur par défaut : gardez les catégories de la valeur par défaut qu'une application veut
+  encore. `[]` désactive la règle.
 
 ### `phil_privacy.log_redaction.token_path_prefixes`
 
@@ -264,7 +285,8 @@ composant Config (`Unrecognized option ... under "phil_privacy"`).
 | `GuestRequests`, `GuestRequestController`, `DbalGuestRequests`, `MailerGuestLinkSender`, `phil_privacy.guest_requests.per_client`, `phil_privacy.guest_requests.per_address` | — | public, privé | Les demandes sans compte, leurs pages et leurs deux fabriques de limiteurs de débit ; `GuestRequests` et les limiteurs seulement quand `guest_requests.enabled`. |
 | `ErasureRequests`, `DbalErasureRequests`, `EraseModuleHandler`, `EraseModuleCodec`, `EraseModuleRelay`, `ErasureFailureListener`, `ErasureRequestCommand` | — | public, privé | Le workflow d'effacement, seulement quand `erasure_workflow.enabled` ; `ErasureRequests` est public. |
 | `ErasureProgressController` | — | public | La page et le JSON de progression d'une demande d'effacement ; un 404 tant que le workflow est inactif. |
-| `PrivacySchedule` | — | privé | Le calendrier `phil_privacy`, avec `symfony/scheduler` et un bus de messages. |
+| `PrivacySchedule` | — | privé | Le calendrier `phil_privacy`, avec `symfony/scheduler` et un bus de messages : les suppressions de compte et la conservation, chacune tant qu'elle est active. |
+| `PrivacySchemaListener` | — | privé | Étiqueté `doctrine.event_listener` sur `postGenerateSchema`, avec les tables du paramètre `phil_privacy.tables` (`PhilPrivacyBundle::TABLES`) ; voir [Les tables](#les-tables). |
 
 Les services de base de données et la commande sont enregistrés quand Symfony Console et Doctrine DBAL sont installés,
 et retirés par `DatabaseServicesPass` quand `database.connection` n'est pas un service.
@@ -276,7 +298,17 @@ consentement, la politique des témoins et les demandes sans compte. Les demande
 demandent chacune de leurs parties — un stockage, un expéditeur, le verrou, l'horloge, le réservoir de cache, et Twig,
 le routeur et les transports du service de courriel pour l'expéditeur par courriel —, et une partie manquante fait
 échouer la construction par une `LogicException` qui la nomme. Le consentement aux courriels suivis, une fois activé,
-demande de la même façon un stockage et l'horloge.
+demande de la même façon un stockage et l'horloge, tout comme les suppressions de compte activées par
+`account_deletion.enabled: true`.
+
+## Les tables
+
+Le bundle n'ajoute au schéma de l'ORM que les tables des fonctionnalités que l'application utilise avec la table du
+bundle pour stockage : `PrivacyServicesPass` les écrit dans le paramètre `phil_privacy.tables`, une fois retiré ce que
+l'application ne peut pas faire tourner, retire les stockages du bundle qu'aucune fonctionnalité n'utilise, et
+`PrivacySchemaListener` ajoute ces tables pour `doctrine:migrations:diff`. Une fonctionnalité éteinte, ou dont le
+stockage est un service de l'application, ne reçoit aucune table. [Installation](installation.md#les-tables) donne la
+table de chaque fonctionnalité.
 
 Avec AssetMapper, le bundle ajoute son répertoire `assets/src` aux chemins de `asset_mapper` sous l'espace de noms
 `@phil/privacy-bundle`, pour que StimulusBundle trouve les contrôleurs `consent` et `embed` que sa recette active.
@@ -305,6 +337,7 @@ du conteneur plutôt que la première ligne de journal. Chaque erreur est une
 | Une catégorie associée à autre chose qu'une chaîne | `phil_privacy.anonymization.categories must map names to strings.` |
 | Un droit désactivé par autre chose que sa phrase | `phil_privacy.rights.export.disable must be exactly this sentence: "…".` |
 | Une durée qui n'en est pas une, ou qui est nulle | `phil_privacy.account_deletion.delay: "x" is not an ISO 8601 duration …` |
+| Les suppressions de compte activées sans le verrou, l'horloge ou un stockage, une `LogicException` | `phil_privacy.account_deletion.enabled is true and needs the lock component (framework.lock), …` |
 | Un nom de catégorie ou une version de texte mal formés | `phil_privacy.consent: "A B" is not a consent category …` |
 | Une ligne de conservation que refuse le modèle | `phil_privacy.retention.rules: …` |
 | Une période fixe de moins de cinq ans sur `phil_privacy_incident` (article 8 du règlement québécois, r. 3.1) | `phil_privacy.retention.rules.R-INC: the register of confidentiality incidents is kept at least five years after the discovery …` |

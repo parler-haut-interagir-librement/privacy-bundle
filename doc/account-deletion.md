@@ -115,14 +115,18 @@ operator closed as failed leaves the deletion at `exported`, for the operator to
 The export is the ZIP archive of an access answer, a `README.txt` and one JSON file per module
 ([export-and-erasure.md](export-and-erasure.md#the-archive-of-an-access-answer)). `EncryptedExportArchive` keeps it as a
 `0600` file of a `0700` directory (`account_deletion.export_directory`), sealed with libsodium under a key derived from
-the application secret, for `account_deletion.export_retention`. Each sweep removes those that have expired.
+the application secret by HKDF, for `account_deletion.export_retention`. Each sweep removes those that have expired.
 
 ## The tables
 
-`phil_privacy_account_deletion` holds the requests. `PrivacySchemaListener` adds it, with the tables of the consent
-proofs, of the requests without an account and of the incidents, to the schema the ORM generates, so
-`doctrine:migrations:diff` writes the migration. An application without Doctrine creates them from
-`PrivacyTables::configure()`, or names its own `account_deletion.store`.
+`phil_privacy_account_deletion` holds the requests. `PrivacySchemaListener` adds it, with the tables of the other
+features in use, to the schema the ORM generates, so `doctrine:migrations:diff` writes the migration. An application
+without Doctrine creates them from `PrivacyTables::configure()`, whose third argument lists the tables, or names its
+own `account_deletion.store`, and then gets no table.
+
+The account deletions are on when `symfony/security-bundle` is among the bundles of the kernel: the application then
+has accounts. `account_deletion.enabled` forces them on or off; on without the lock, the clock or a store, the build
+fails. Off, nothing of them is registered and the table is not added; see [Installation](installation.md#the-tables).
 
 Identifiers, people, export references and token hashes compare byte for byte. On MySQL and MariaDB, whose default
 collations fold case and accents, those columns take `utf8mb4_bin`: `PrivacySchemaListener` gives

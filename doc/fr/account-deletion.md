@@ -1,4 +1,4 @@
-<!-- phil-dev source-sha256=9ba3b996d9e2f8be946ae81689ad00745629084b7e11461e9bba32c202b5ba5d -->
+<!-- phil-dev source-sha256=e06e4b2011a48204a57a7c7fda10c6fc00d31e6058f7f5b6152325c9f584c45b -->
 # Supprimer un compte
 
 `AccountDeletions` supprime un compte par étapes, sur `symfony/workflow` : une demande, un délai pendant lequel la
@@ -121,14 +121,20 @@ la ferme une fois la demande terminée. Une demande qu'un exploitant a fermée c
 L'export est l'archive ZIP d'une réponse d'accès, un `README.txt` et un fichier JSON par module
 ([export-and-erasure.md](export-and-erasure.md#larchive-dune-réponse-daccès)). `EncryptedExportArchive` la garde comme
 fichier `0600` d'un répertoire `0700` (`account_deletion.export_directory`), scellée par libsodium sous une clé dérivée
-du secret de l'application, pendant `account_deletion.export_retention`. Chaque balayage retire celles qui ont expiré.
+du secret de l'application par HKDF, pendant `account_deletion.export_retention`. Chaque balayage retire celles qui
+ont expiré.
 
 ## Les tables
 
-`phil_privacy_account_deletion` contient les demandes. `PrivacySchemaListener` l'ajoute, avec les tables des preuves de
-consentement, des demandes sans compte et des incidents, au schéma que génère l'ORM : `doctrine:migrations:diff` écrit
-donc la migration. Une application sans Doctrine les crée à partir de `PrivacyTables::configure()`, ou nomme son propre
-`account_deletion.store`.
+`phil_privacy_account_deletion` contient les demandes. `PrivacySchemaListener` l'ajoute, avec les tables des autres
+fonctionnalités utilisées, au schéma que génère l'ORM : `doctrine:migrations:diff` écrit donc la migration. Une
+application sans Doctrine les crée à partir de `PrivacyTables::configure()`, dont le troisième argument donne les
+tables, ou nomme son propre `account_deletion.store`, et ne reçoit alors aucune table.
+
+Les suppressions de compte sont actives quand `symfony/security-bundle` est parmi les bundles du noyau : l'application a
+alors des comptes. `account_deletion.enabled` les force à actives ou éteintes ; actives sans le verrou, l'horloge ou un
+stockage, la construction échoue. Éteintes, rien d'elles n'est enregistré et la table n'est pas ajoutée ; voir
+[Installation](installation.md#les-tables).
 
 Les identifiants, les personnes, les références d'export et les empreintes de jeton se comparent octet par octet. Sur
 MySQL et MariaDB, dont les collations par défaut ignorent la casse et les accents, ces colonnes prennent `utf8mb4_bin` :

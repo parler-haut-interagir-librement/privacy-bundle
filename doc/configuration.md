@@ -30,6 +30,7 @@ to show each rule's store, period, mechanism and answer to erasure; without it, 
 
 | Key | Default | Effect |
 |---|---|---|
+| `enabled` | `null` | Whether members can ask for the deletion of their account; `null`, on when `symfony/security-bundle` is among the bundles of the kernel, the application then having accounts. `true` needs the lock, the clock and a store, and fails the build without them; `false` registers nothing of the deletions. |
 | `delay` | `P30D` | How long a request can be cancelled. A zero duration is refused. |
 | `frequency` | `15 minutes` | How often the schedule `phil_privacy` looks for what is due. |
 | `store` | `null` | Service id of an `AccountDeletionStore`; `null`, the table of the bundle. |
@@ -78,8 +79,12 @@ Erasure as a workflow, off by default; see [erasure-workflow.md](erasure-workflo
 
 ### `phil_privacy.incidents`
 
-`store`: the service id of an `IncidentRegister`; `null` (the default), the table of the bundle. See
-[incidents.md](incidents.md).
+| Key | Default | Effect |
+|---|---|---|
+| `enabled` | `true` | The register of confidentiality incidents, its journal, the drafts of its notices and its commands; `false` when the application keeps its register elsewhere. |
+| `store` | `null` | The service id of an `IncidentRegister`; `null`, the tables of the bundle. |
+
+See [incidents.md](incidents.md).
 
 ### `phil_privacy.email_tracking`
 
@@ -165,6 +170,8 @@ phil_privacy:
         # The value is redacted only when the denylist denies that long name.
         short_options:
             p: password
+        # The categories of #[PersonalData] whose names are denied keys too.
+        personal_data_categories: [email, person_name, nickname, phone, ip, contact, birth_date]
     database:
         connection: database_connection   # a Doctrine DBAL connection service
     anonymization:
@@ -202,6 +209,19 @@ writing every child with its default. Any other key under `phil_privacy` is refu
 - Lists from several configuration files are concatenated, as with any prototyped list in Symfony.
 - The same list governs three things: context and `extra` keys, long option names in command lines, and the
   long names that `short_options` points to. See [log-redaction.md](log-redaction.md).
+
+### `phil_privacy.log_redaction.personal_data_categories`
+
+| | |
+|---|---|
+| Type | list of scalars, each one a string |
+| Default | `[email, person_name, nickname, phone, ip, contact]`, `RedactingProcessor::PERSONAL_DATA_CATEGORIES` |
+| Effect | Each category of `#[PersonalData]` is a denied key too, beside the `denylist`. |
+
+- Each entry is a category: a lowercase `snake_case` token of at most 64 characters. `Birth Date` fails the build.
+- A category is compared as a key, exactly: `email` denies `email`, `Email` and `e-mail`, not `email_count`.
+- Writing the list replaces the default: keep the categories of the default an application still wants. `[]` turns
+  the rule off.
 
 ### `phil_privacy.log_redaction.token_path_prefixes`
 
@@ -261,7 +281,8 @@ writing every child with its default. Any other key under `phil_privacy` is refu
 | `GuestRequests`, `GuestRequestController`, `DbalGuestRequests`, `MailerGuestLinkSender`, `phil_privacy.guest_requests.per_client`, `phil_privacy.guest_requests.per_address` | — | public, private | The requests without an account, their pages and their two rate limiter factories; `GuestRequests` and the limiters only when `guest_requests.enabled`. |
 | `ErasureRequests`, `DbalErasureRequests`, `EraseModuleHandler`, `EraseModuleCodec`, `EraseModuleRelay`, `ErasureFailureListener`, `ErasureRequestCommand` | — | public, private | The erasure workflow, only when `erasure_workflow.enabled`; `ErasureRequests` is public. |
 | `ErasureProgressController` | — | public | The progress page and JSON of an erasure request; a 404 while the workflow is off. |
-| `PrivacySchedule` | — | private | The schedule `phil_privacy`, with `symfony/scheduler` and a message bus. |
+| `PrivacySchedule` | — | private | The schedule `phil_privacy`, with `symfony/scheduler` and a message bus: the account deletions and the retention, each while it is on. |
+| `PrivacySchemaListener` | — | private | Tagged `doctrine.event_listener` on `postGenerateSchema`, with the tables of the parameter `phil_privacy.tables` (`PhilPrivacyBundle::TABLES`); see [The tables](#the-tables). |
 
 The database services and the command are registered when Symfony Console and Doctrine DBAL are installed, and
 removed by `DatabaseServicesPass` when `database.connection` is not a service.
@@ -272,7 +293,15 @@ tokens and a router there are no pages; without a firewall the consent, the cook
 account remain. The requests without an account, once enabled, need every one of their parts — a store, a sender, the
 lock, the clock, the cache pool, and Twig, the router and the mailer's transports for the mailer sender —, and a
 missing one fails the build with a `LogicException` that names it. The consent to tracked emails, once enabled, needs a
-store and the clock, in the same way.
+store and the clock, in the same way, and so do the account deletions turned on by `account_deletion.enabled: true`.
+
+## The tables
+
+The bundle adds to the schema of the ORM only the tables of the features the application uses with the table of the
+bundle as their store: `PrivacyServicesPass` writes them in the parameter `phil_privacy.tables`, once it has taken out
+what the application cannot run, takes out the stores of the bundle no feature uses, and `PrivacySchemaListener` adds
+those tables for `doctrine:migrations:diff`. A feature that is off, or whose store is a service of the application,
+gets no table. [Installation](installation.md#the-tables) lists which table comes with which feature.
 
 With AssetMapper, the bundle adds its `assets/src` directory to the paths of `asset_mapper` under the namespace
 `@phil/privacy-bundle`, so that StimulusBundle finds the controllers `consent` and `embed` its recipe enables.
@@ -301,6 +330,7 @@ than the first log line. Every error is an
 | A category mapped to something other than a string | `phil_privacy.anonymization.categories must map names to strings.` |
 | A right turned off with anything but its sentence | `phil_privacy.rights.export.disable must be exactly this sentence: "…".` |
 | A duration that is not one, or is zero | `phil_privacy.account_deletion.delay: "x" is not an ISO 8601 duration …` |
+| The account deletions turned on without the lock, the clock or a store, a `LogicException` | `phil_privacy.account_deletion.enabled is true and needs the lock component (framework.lock), …` |
 | A malformed category name or text version | `phil_privacy.consent: "A B" is not a consent category …` |
 | A retention line the model refuses | `phil_privacy.retention.rules: …` |
 | A fixed period shorter than five years on `phil_privacy_incident` (section 8 of the Québec regulation, r. 3.1) | `phil_privacy.retention.rules.R-INC: the register of confidentiality incidents is kept at least five years after the discovery …` |
